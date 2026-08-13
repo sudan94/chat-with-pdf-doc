@@ -1,18 +1,18 @@
 import streamlit as st
 import os
+from typing import Annotated, TypedDict
 from PyPDF2 import PdfReader
 import docx
-from langchain.chat_models import ChatOpenAI
-from langchain.llms import OpenAI
 from dotenv import load_dotenv
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings.huggingface import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain import HuggingFaceHub
+from langchain_openai import ChatOpenAI
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 from streamlit_chat import message
-from langchain.callbacks import get_openai_callback
 
 
 
@@ -107,32 +107,52 @@ def get_vectorstore(text_chunks):
     knowledge_base = FAISS.from_texts(text_chunks,embeddings)
     return knowledge_base
 
+class ChatState(TypedDict):
+    # add_messages appends new messages instead of overwriting the list
+    messages: Annotated[list, add_messages]
+    context: str
+
+
 def get_conversation_chain(vetorestore,openai_api_key):
-    llm = ChatOpenAI(openai_api_key=openai_api_key, model_name = 'gpt-3.5-turbo',temperature=0)
-    memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vetorestore.as_retriever(),
-        memory=memory
-    )
-    return conversation_chain
+    llm = ChatOpenAI(api_key=openai_api_key, model = 'gpt-3.5-turbo',temperature=0)
+    retriever = vetorestore.as_retriever()
 
+    def retrieve(state: ChatState):
+        # last message is the question the user just asked
+        question = state["messages"][-1].content
+        docs = retriever.invoke(question)
+        return {"context": "\n\n".join(doc.page_content for doc in docs)}
 
-# def get_conversation_chain(vetorestore):
-#     llm = HuggingFaceHub(repo_id="google/flan-t5-large", model_kwargs={"temperature":5,
-#                                                       "max_length":64})
-#     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-#     conversation_chain = ConversationalRetrievalChain.from_llm(
-#         llm=llm,
-#         retriever=vetorestore.as_retriever(),
-#         memory=memory
-#     )
-#     return conversation_chain
+    def generate(state: ChatState):
+        system = SystemMessage(content=(
+            "You are a helpful assistant. Answer the question using the context below. "
+            "If the answer is not in the context, say you don't know.\n\n"
+            f"Context:\n{state['context']}"
+        ))
+        answer = llm.invoke([system] + state["messages"])
+        return {"messages": [answer]}
+
+    # build the graph: START -> retrieve -> generate -> END
+    graph = StateGraph(ChatState)
+    graph.add_node("retrieve", retrieve)
+    graph.add_node("generate", generate)
+    graph.add_edge(START, "retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", END)
+
+    # MemorySaver keeps the chat history per thread_id (replaces ConversationBufferMemory)
+    return graph.compile(checkpointer=MemorySaver())
 
 def handel_userinput(user_question):
-    with get_openai_callback() as cb:
-        response = st.session_state.conversation({'question':user_question})
-    st.session_state.chat_history = response['chat_history']
+    # thread_id tells LangGraph which conversation to load from the checkpointer
+    config = {"configurable": {"thread_id": "streamlit-session"}}
+    response = st.session_state.conversation.invoke(
+        {"messages": [HumanMessage(content=user_question)]},
+        config=config,
+    )
+    st.session_state.chat_history = response['messages']
+    # token counts come straight off the answer message
+    usage = getattr(response['messages'][-1], "usage_metadata", None) or {}
 
     # Layout of input/response containers
     response_container = st.container()
@@ -143,7 +163,7 @@ def handel_userinput(user_question):
                 message(messages.content, is_user=True, key=str(i))
             else:
                 message(messages.content, key=str(i))
-        st.write(f"Total Tokens: {cb.total_tokens}" f", Prompt Tokens: {cb.prompt_tokens}" f", Completion Tokens: {cb.completion_tokens}" f", Total Cost (USD): ${cb.total_cost}")
+        st.write(f"Total Tokens: {usage.get('total_tokens', 0)}" f", Prompt Tokens: {usage.get('input_tokens', 0)}" f", Completion Tokens: {usage.get('output_tokens', 0)}")
 
                  # for i, message in enumerate(st.session_state.chat_history):
     #     if i % 2 == 0:
