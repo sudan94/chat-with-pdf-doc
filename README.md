@@ -1,14 +1,21 @@
-# Chat with PDF and DOC using OpenAI
+# Chat with PDF and DOC using LangGraph + OpenAI
 
 <img src="./art/demo.gif?raw=true">
 
 ## Overview:
-This project provides a simple and user-friendly chatbot capable of answering questions and extracting information from PDF and DOC files using the OpenAI language model. The chatbot is powered by the OpenAI API, allowing it to understand natural language queries and respond with relevant content from the documents.
+This project provides a simple and user-friendly chatbot capable of answering questions and extracting information from PDF and DOC files using the OpenAI language model. The RAG pipeline is built as a **LangGraph** state graph (`retrieve` → `generate`), with conversation history persisted through a LangGraph checkpointer.
 
 ## Features:
 - Interactive chatbot interface
 - PDF and DOC parsing
+- LangGraph state graph for the RAG flow, with `MemorySaver` checkpointing for multi-turn memory
+- FAISS vector store with HuggingFace embeddings
 - Easy-to-use with Streamlit web application
+
+## Graph:
+```
+START -> retrieve (FAISS similarity search) -> generate (ChatOpenAI) -> END
+```
 
 ## Installation:
 1. Clone the repository:
@@ -19,7 +26,7 @@ This project provides a simple and user-friendly chatbot capable of answering qu
 ```pip install -r requirements.txt```
 
 3. Start the Streamlit app:
-```streamlit run chatbot.py```
+```streamlit run app.py```
 
 ## License:
 This project is licensed under the MIT License.
